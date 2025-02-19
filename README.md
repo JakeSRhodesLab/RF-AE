@@ -17,3 +17,47 @@ model = RFAE()
 emb_train = model.fit_transform(x_train, y_train)   # training and get embeddings of training set
 emb_test = model.transform(x_test)   # get embeddings of test set
 ```
+
+## Parameters
+
+```n_components```: Dimensionality of the embedding space
+
+```lam```: Loss balancing parameter that controls the trade-off between reconstruction and embedding loss. Default: ```1e-3```.
+
+```loss_scaling```: If ```True```, scales the embedding loss and reconstruction loss to be on the same scale. In this case, lam should be between ```0``` and ```1```. Default: ```False```.
+
+```pct_landmark```: Specifies the number or percentage of landmarks used for proximity calculations during training. ```"auto"```: Uses 2000 landmarks. A float between 0 and 1: Represents the percentage of the dataset size to use as landmarks. ```None```: Uses all proximities. Default: ```"auto"```.
+
+```n_pca```: Number of principal components (PCs) used for selecting landmarks. Must be smaller than the dataset size. ```None``` is default (100) from PHATE
+
+```embedder_params```: parameters dict for [RF-PHATE](https://github.com/jakerhodes/RF-PHATE.git)
+
+```hidden_dims```: List of dimensions for the hidden layers of the autoencoder.
+
+```dropout_prob```: Dropout probability applied during training to prevent overfitting.
+ 
+```lr```: Learning rate for model optimization.
+
+```weight_decay```: Regularization term for weight updates to prevent overfitting.
+
+```batch_size```: Number of samples per batch during training.
+
+```epochs```: Total number of training epochs.
+
+```random_state```: Seed for random number generation to ensure reproducibility.
+
+```device```: Computing device used for training. 
+
+```early_stopping```: If ```True```, enables early stopping during training to prevent overfitting. Default: ```False```.
+
+```patience```: Number of epochs to wait without improvement before stopping training. Only used when ```early_stopping = True```.
+
+```delta_factor```: Minimum relative improvement required to reset the early stopping counter. Only used when ```early_stopping = True```.
+
+```save_model```: If True, saves the model after training. Only used when ```early_stopping = True```.
+
+
+
+
+
+
