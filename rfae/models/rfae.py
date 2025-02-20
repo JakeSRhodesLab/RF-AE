@@ -36,7 +36,7 @@ class RFAE(BaseModel):
                  n_pca: Optional[int] = None,
                  hidden_dims: list = [800,400,100],
                  embedder_params: Optional[Dict[str, Any]] = None,
-                 lam: float = 1e-2,
+                 lam: float = 1e-3,
                  loss_scaling: bool = False,
                  pct_landmark: Union[str, float, None] = 'auto',   # "auto" or float between 0 and 1 or None
                  dropout_prob: float = 0.0,
