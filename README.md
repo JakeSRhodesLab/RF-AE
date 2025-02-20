@@ -1,6 +1,6 @@
 # RF-AE
 
-Random Forest Autoencoders (RF-AE), a neural network-based framework for out-of-sample kernel extension that combines the flexibility of autoencoders with the supervised learning strengths of random forests and the geometry captured by RF-PHATE. RF-AE enables efficient out-of-sample supervised visualization. 
+Random Forest Autoencoders (RF-AE), a neural network-based framework for out-of-sample kernel extension that combines the flexibility of autoencoders with the supervised learning strengths of random forests and the geometry captured by RF-PHATE. RF-AE enables efficient out-of-sample supervised visualization. Paper can be found：[https://arxiv.org/abs/2502.13257](https://arxiv.org/abs/2502.13257)
 
 ## Installation
 Requirements: Python >= 3.9
