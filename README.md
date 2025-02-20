@@ -20,9 +20,9 @@ emb_test = model.transform(x_test)   # get embeddings of test set
 
 ## Parameters
 
-```n_components```: Dimensionality of the embedding space
+```n_components```: Dimensionality of the embedding space.
 
-```lam```: Loss balancing parameter that controls the trade-off between reconstruction and embedding loss. Default: ```1e-3```.
+```lam```: Main hyper-parameter that controls the trade-off between RF-GAP neighborhood reconstruction and geometric loss on the bottleneck. Valid values are between ```0``` and ```1```: ```lam=0``` trains a deep encoder-only network to regress onto precomputed training RF-PHATE embeddings while ```lam=1``` trains an autoencoder reconstructing RF-GAP neighborhoods without geometric regularization. Default: ```1e-3```.
 
 ```loss_scaling```: If ```True```, scales the embedding loss and reconstruction loss to be on the same scale. In this case, lam should be between ```0``` and ```1```. Default: ```False```.
 
