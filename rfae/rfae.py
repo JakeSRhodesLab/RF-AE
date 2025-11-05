@@ -37,7 +37,7 @@ class RFAE():
                  batch_size=512,
                  weight_decay=1e-5,
                  random_state=None,
-                 device='cuda' if torch.cuda.is_available() else 'cpu',
+                 device=None,
                  epochs=200,
                  hidden_dims=[800,400,100],
                  embedder_params=None,
@@ -68,13 +68,23 @@ class RFAE():
         self.batch_size = batch_size
         self.weight_decay = weight_decay
         self.random_state = random_state
-        self.device = device
         self.epochs = epochs
         self.hidden_dims = hidden_dims
         self.lam = lam
         self.pct_prototypes = pct_prototypes
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
+
+        if device is not None:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = 'cuda'
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available(): # For Apple Silicon
+            self.device = 'mps'
+        else:
+            self.device = 'cpu'
+
+        self.logger.info(f"Using device: {self.device}")
 
         self.embedder_params = embedder_params if embedder_params is not None else {
                                                                                     'n_estimators': 500,
