@@ -72,6 +72,8 @@ rfae = RFAE(
 # Fit the model to the training data
 # This runs RFPHATE and trains the autoencoder
 rfae.fit(X_train, y_train)
+# You can also project the training set after fitting using fit_transform(). Do not use transform(X_train) after fit(X_train, y_train), since transform() assumes out-of-sample instances
+# X_train_embedding = rfae.fit_transform(X_train, y_train)
 
 # Transform new data into the 2D embedding
 # X_test -> Proximities -> AE Encoder -> 2D Embedding
