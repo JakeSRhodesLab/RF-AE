@@ -9,32 +9,17 @@ import kmedoids
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
-from .torch_models import ProxAETorchModule
+from .torch_models import ProxAETorchModule, JSDivLoss
 from rfae.utils.numpy_dataset import FromNumpyDataset
 from rfae.utils.set_seeds import seed_everything
 
-
-class JSDivLoss(nn.Module):
-    def __init__(self, reduction='batchmean', eps=1e-8):
-        super().__init__()
-        self.reduction = reduction
-        self.eps = eps
-
-    def forward(self, p, q):
-        p = p.clamp(min=self.eps, max=1.0)
-        q = q.clamp(min=self.eps, max=1.0)
-        m = 0.5 * (p + q)
-        return 0.5 * (
-            F.kl_div(m.log(), p, reduction=self.reduction) +
-            F.kl_div(m.log(), q, reduction=self.reduction)
-        )
 
 
 class RFAE():
     def __init__(self,
                  n_components=2,
-                 lr=1e-3,
                  batch_size=512,
+                 lr=1e-3,
                  weight_decay=1e-5,
                  random_state=None,
                  device=None,
@@ -42,13 +27,10 @@ class RFAE():
                  hidden_dims=[800,400,100],
                  embedder_params=None,
                  lam=1e-2,
-                 pct_prototypes=0.02,
+                 n_prototypes=500,
                  dropout_prob=0.0,
-                 recon_loss_type='jsd'):
-        
-        # ---------------------------
-        # Logger initialization
-        # ---------------------------
+                 recon_loss_type='kl'):
+
         self.logger = logging.getLogger(__name__)
         if not self.logger.hasHandlers():
             handler = logging.StreamHandler(sys.stdout)
@@ -58,20 +40,16 @@ class RFAE():
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
-        
-        # ---------------------------
-        # Model configuration
-        # ---------------------------
 
         self.n_components = n_components
-        self.lr = lr
         self.batch_size = batch_size
+        self.lr = lr
         self.weight_decay = weight_decay
         self.random_state = random_state
         self.epochs = epochs
         self.hidden_dims = hidden_dims
         self.lam = lam
-        self.pct_prototypes = pct_prototypes
+        self.n_prototypes = n_prototypes
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
 
@@ -86,16 +64,23 @@ class RFAE():
 
         self.logger.info(f"Using device: {self.device}")
 
-        self.embedder_params = embedder_params if embedder_params is not None else {
+        self.embedder_params = embedder_params if embedder_params is not None else {'random_state': random_state,
+                                                                                    'n_components': n_components,
                                                                                     'n_estimators': 500,
                                                                                     'prox_method': 'rfgap',
                                                                                     'oob_score': True,
-                                                                                    'normalize': False,
+                                                                                    'triangular': True,  # for original/oob prox methods only
+                                                                                    'non_zero_diagonal': True,  # important for training stability
+                                                                                    'normalize': False,  # whether to max normalize (0-1) the RF proximity matrix. False is recommended for extended RFGAP
                                                                                     'force_symmetric': False,  # important for better training/test consistency
+                                                                                    'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
+                                                                                    'batch_size': 'auto',  # batch size for RF proximity computation
                                                                                     'verbose': 0,
-                                                                                    'n_jobs': -1
+                                                                                    'n_jobs': -1,
                                                                                     }
-        self.embedder = RFPHATE(random_state=random_state, n_components=n_components, **self.embedder_params)
+        self.embedder_params['n_components'] = n_components  # ensure consistency with class param
+        self.embedder_params['random_state'] = random_state  # ensure consistency with class param
+        self.embedder = RFPHATE(**self.embedder_params)
         
 
     def init_torch_module(self, input_shape):
@@ -112,7 +97,7 @@ class RFAE():
             dropout_prob=self.dropout_prob,
             output_activation=output_activation
         )
-
+        self.criterion_geo = nn.MSELoss()
         if self.recon_loss_type == 'kl':
             self.criterion_recon = nn.KLDivLoss(reduction="batchmean")
         elif self.recon_loss_type == 'jsd':
@@ -130,44 +115,50 @@ class RFAE():
             seed_everything(self.random_state)
 
         self.z_target = self.embedder.fit_transform(x, y)
-        self.training_proximities = self.embedder.proximity.toarray()
-        
-        if 0 < self.pct_prototypes < 1:
-            # Max normalize each row, symmetrize, set diagonal to 1
-            row_max = self.training_proximities.max(axis=1, keepdims=True)
-            row_max[row_max == 0] = 1.0
-            prox_matrix = self.training_proximities / row_max
-            prox_matrix = 0.5 * (prox_matrix + prox_matrix.T)
-            np.fill_diagonal(prox_matrix, 1.0)
-            
-            # Create distance matrix
-            dist_matrix = 1 - prox_matrix
+        prox_sparse = self.embedder.proximity  # sparse (N x N) by default, unless specified as dense in embedder_params
 
-            k = int(self.pct_prototypes * self.input_shape)
+        if self.n_prototypes is not None:
             classes = np.unique(y)
-            k_per_class = max(1, k // len(classes))
-
+            k_per_class = max(1, self.n_prototypes // len(classes))
             prototype_indices = []
+            
             for cls in classes:
                 cls_indices = np.where(y == cls)[0]
-                if len(cls_indices) <= k_per_class:
-                    prototype_indices.extend(cls_indices)
+                n_cls = len(cls_indices)
+                if n_cls <= k_per_class:  # If small class, take all
+                    prototype_indices.extend(cls_indices.tolist())
                     continue
-
-                sub_dists = dist_matrix[np.ix_(cls_indices, cls_indices)]
-                km = kmedoids.KMedoids(k_per_class, method='fasterpam', random_state=self.random_state)
-                km.fit(sub_dists)
-                prototype_indices.extend(cls_indices[km.medoid_indices_])
-
+                
+                subset_size = min(n_cls, 30 * k_per_class)  # Dynamically determine subsample size based on desired number of prototypes
+                rng = np.random.default_rng(self.random_state)
+                chosen = rng.choice(cls_indices, size=subset_size, replace=False)
+                sub_prox_sparse = prox_sparse[chosen][:, chosen]  # Extract sparse block and densify only this subset
+                sub_prox = sub_prox_sparse.toarray().astype(np.float32)
+                row_max = sub_prox.max(axis=1, keepdims=True)  # Normalize rows
+                row_max[row_max == 0] = 1.0
+                sub_prox /= row_max    
+                sub_prox = 0.5 * (sub_prox + sub_prox.T)  # Symmetrize
+                np.fill_diagonal(sub_prox, 1.0)
+                sub_dist = 1.0 - sub_prox  # Convert similarities to distances
+            
+                # Run k-medoids
+                km = kmedoids.KMedoids(k_per_class,method="fasterpam",random_state=self.random_state)
+                km.fit(sub_dist)
+            
+                # Map medoids back to original indices
+                medoids_global = chosen[km.medoid_indices_]
+                prototype_indices.extend(medoids_global.tolist())
             self.prototype_indices = np.array(prototype_indices, dtype=int)
-            self.training_proximities = self.training_proximities[:, self.prototype_indices]
-            self.init_torch_module(len(self.prototype_indices))
-        else:
-            self.prototype_indices = np.arange(self.input_shape)
-            self.init_torch_module(self.input_shape)
+            self.logger.info(f"Selected {len(self.prototype_indices)} prototypes out of {self.input_shape} samples ({len(self.prototype_indices)/self.input_shape:.2%}).")
+            self.training_proximities = prox_sparse[:, self.prototype_indices].toarray()  # Build training proximities: N × (#prototypes) (dense)
 
+        else:
+            # No prototype selection, use all samples. This can be memory-intensive for large datasets.
+            self.prototype_indices = np.arange(self.input_shape)
+            self.training_proximities = prox_sparse.toarray()   # Build training proximities: N × N (dense)
+
+        self.init_torch_module(len(self.prototype_indices))
         self.optimizer = torch.optim.AdamW(self.torch_module.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        self.criterion_geo = nn.MSELoss()
 
         training_proximities = torch.tensor(self.training_proximities, dtype=torch.float)
         training_proximities = F.normalize(training_proximities, p=1)
@@ -223,7 +214,7 @@ class RFAE():
             self.epoch_losses_balanced.append(running_balanced_loss / len(train_loader))
 
             # Periodic logging of losses
-            if epoch % 50 == 0:
+            if epoch % 20 == 0:
                 self.logger.info(
                     f"Epoch {epoch}/{epochs} "
                     f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f} "
