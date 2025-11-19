@@ -79,3 +79,18 @@ class ProxAETorchModule(nn.Module):
         recon = self.decoder(z)
         recon = self.final_activation(recon)
         return recon, z
+    
+class JSDivLoss(nn.Module):
+    def __init__(self, reduction='batchmean', eps=1e-8):
+        super().__init__()
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, p, q):
+        p = p.clamp(min=self.eps, max=1.0)
+        q = q.clamp(min=self.eps, max=1.0)
+        m = 0.5 * (p + q)
+        return 0.5 * (
+            F.kl_div(m.log(), p, reduction=self.reduction) +
+            F.kl_div(m.log(), q, reduction=self.reduction)
+        )
