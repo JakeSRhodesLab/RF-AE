@@ -5,7 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import logging
-import kmedoids
+import graphtools
+from scipy import sparse
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
@@ -24,10 +25,9 @@ class RFAE():
                  random_state=None,
                  device=None,
                  epochs=200,
-                 hidden_dims=[800,400,100],
+                 hidden_dims=None,
                  embedder_params=None,
                  lam=1e-2,
-                 n_prototypes=500,
                  dropout_prob=0.0,
                  recon_loss_type='kl'):
 
@@ -49,7 +49,6 @@ class RFAE():
         self.epochs = epochs
         self.hidden_dims = hidden_dims
         self.lam = lam
-        self.n_prototypes = n_prototypes
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
 
@@ -66,16 +65,15 @@ class RFAE():
 
         self.embedder_params = embedder_params if embedder_params is not None else {'random_state': random_state,
                                                                                     'n_components': n_components,
-                                                                                    'n_estimators': 500,
-                                                                                    'prox_method': 'rfgap',
-                                                                                    'oob_score': True,
-                                                                                    'triangular': True,  # for original/oob prox methods only
+                                                                                    'n_landmark': 2000,  # performs well in general, cf PHATE paper
+                                                                                    'prox_method': 'rfgap',  # 'rfgap' or 'original'
+                                                                                    'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
+                                                                                    'oob_score': False,  # may be useful to monitor Random Forest performance
                                                                                     'non_zero_diagonal': True,  # important for training stability
-                                                                                    'normalize': False,  # whether to max normalize (0-1) the RF proximity matrix. False is recommended for extended RFGAP
-                                                                                    'force_symmetric': False,  # important for better training/test consistency
+                                                                                    'force_symmetric': True,  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
+                                                                                    'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
                                                                                     'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
-                                                                                    'batch_size': 'auto',  # batch size for RF proximity computation
-                                                                                    'verbose': 0,
+                                                                                    'verbose': 1,
                                                                                     'n_jobs': -1,
                                                                                     }
         self.embedder_params['n_components'] = n_components  # ensure consistency with class param
@@ -83,15 +81,27 @@ class RFAE():
         self.embedder = RFPHATE(**self.embedder_params)
         
 
-    def init_torch_module(self, input_shape):
+    def init_torch_module(self):
         output_activation = {
             'kl': 'log_softmax',
-            'jsd': 'softmax',
-            'mse': 'softmax'
+            'jsd': 'softmax'
         }[self.recon_loss_type]
 
+        self.logger.info(f"Initializing RF-AE module with output activation: {output_activation}")
+        self.logger.info(f"Input shape: {self.input_shape}")
+
+        self.hidden_dims_ratios = [0.4, 0.2, 0.05] # Default ratios
+        if self.hidden_dims is None:
+            # Dynamic calculation based on input size, determined by PHATE landmarks (fixed and relatively small)
+            # Ensure they are integers and at least size of n_components + some buffer
+            self.hidden_dims = [
+                max(self.n_components * 2, int(self.input_shape * ratio)) 
+                for ratio in self.hidden_dims_ratios
+            ]
+            self.logger.info(f"Dynamically set hidden_dims to: {self.hidden_dims}")
+
         self.torch_module = ProxAETorchModule(
-            input_dim=input_shape,
+            input_dim=self.input_shape,
             hidden_dims=self.hidden_dims,
             z_dim=self.n_components,
             dropout_prob=self.dropout_prob,
@@ -102,71 +112,49 @@ class RFAE():
             self.criterion_recon = nn.KLDivLoss(reduction="batchmean")
         elif self.recon_loss_type == 'jsd':
             self.criterion_recon = JSDivLoss(reduction='batchmean')
-        elif self.recon_loss_type == 'mse':
-            self.criterion_recon = nn.MSELoss(reduction="mean")
         else:
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
 
+    
     def fit(self, x, y):
-        self.input_shape = x.shape[0]
         self.labels = y
 
         if self.random_state is not None:
             seed_everything(self.random_state)
 
         self.z_target = self.embedder.fit_transform(x, y)
-        prox_sparse = self.embedder.proximity  # sparse (N x N) by default, unless specified as dense in embedder_params
 
-        if self.n_prototypes is not None:
-            classes = np.unique(y)
-            k_per_class = max(1, self.n_prototypes // len(classes))
-            prototype_indices = []
-            
-            for cls in classes:
-                cls_indices = np.where(y == cls)[0]
-                n_cls = len(cls_indices)
-                if n_cls <= k_per_class:  # If small class, take all
-                    prototype_indices.extend(cls_indices.tolist())
-                    continue
-                
-                subset_size = min(n_cls, 30 * k_per_class)  # Dynamically determine subsample size based on desired number of prototypes
-                rng = np.random.default_rng(self.random_state)
-                chosen = rng.choice(cls_indices, size=subset_size, replace=False)
-                sub_prox_sparse = prox_sparse[chosen][:, chosen]  # Extract sparse block and densify only this subset
-                sub_prox = sub_prox_sparse.toarray().astype(np.float32)
-                row_max = sub_prox.max(axis=1, keepdims=True)  # Normalize rows
-                row_max[row_max == 0] = 1.0
-                sub_prox /= row_max    
-                sub_prox = 0.5 * (sub_prox + sub_prox.T)  # Symmetrize
-                np.fill_diagonal(sub_prox, 1.0)
-                sub_dist = 1.0 - sub_prox  # Convert similarities to distances
-            
-                # Run k-medoids
-                km = kmedoids.KMedoids(k_per_class,method="fasterpam",random_state=self.random_state)
-                km.fit(sub_dist)
-            
-                # Map medoids back to original indices
-                medoids_global = chosen[km.medoid_indices_]
-                prototype_indices.extend(medoids_global.tolist())
-            self.prototype_indices = np.array(prototype_indices, dtype=int)
-            self.logger.info(f"Selected {len(self.prototype_indices)} prototypes out of {self.input_shape} samples ({len(self.prototype_indices)/self.input_shape:.2%}).")
-            self.training_proximities = prox_sparse[:, self.prototype_indices].toarray()  # Build training proximities: N × (#prototypes) (dense)
-
+        if isinstance(self.embedder.phate_op.graph, graphtools.graphs.LandmarkGraph):
+            transitions = self.embedder.phate_op.graph.transitions  # landmark graph transitions, shape (n_samples, n_landmarks)
         else:
-            # No prototype selection, use all samples. This can be memory-intensive for large datasets.
-            self.prototype_indices = np.arange(self.input_shape)
-            self.training_proximities = prox_sparse.toarray()   # Build training proximities: N × N (dense)
+            transitions = self.embedder.phate_op.graph.diff_op  # traditional graph transitions, shape (n_samples, n_samples)   
 
-        self.init_torch_module(len(self.prototype_indices))
+        self.input_shape = transitions.shape[1]
+        self.init_torch_module()
+
         self.optimizer = torch.optim.AdamW(self.torch_module.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
-        training_proximities = torch.tensor(self.training_proximities, dtype=torch.float)
-        training_proximities = F.normalize(training_proximities, p=1)
-
-        train_loader = DataLoader(TensorDataset(training_proximities, torch.tensor(self.z_target, dtype=torch.float)),
-                                  batch_size=self.batch_size, shuffle=True)
+        transitions_tensor = torch.tensor(transitions.toarray(), dtype=torch.float) if sparse.issparse(transitions) else torch.tensor(transitions, dtype=torch.float)
+        dataset = TensorDataset(transitions_tensor, torch.tensor(self.z_target, dtype=torch.float))
+        train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.train_loop(self.torch_module, self.epochs, train_loader, self.optimizer, self.device)
+
+        self.logger.info("Generating training embedding...")
+        self.torch_module.eval()
+        z_train = []
+        
+        # Use a sequential loader (shuffle=False) to maintain order
+        eval_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+        
+        with torch.no_grad():
+            for x_batch, _ in eval_loader:
+                z_batch = self.torch_module.encoder(x_batch.to(self.device)).cpu().numpy()
+                z_train.append(z_batch)
+        
+        self.embedding_ = np.concatenate(z_train)
+        
+        return self
 
 
     def compute_loss(self, x, x_hat, z, z_target):
@@ -179,6 +167,7 @@ class RFAE():
         balanced_loss = self.lam * loss_recon + (1 - self.lam) * loss_emb
         self.balanced_loss = balanced_loss.item()
         return balanced_loss
+
 
     def train_loop(self, model, epochs, train_loader, optimizer, device = 'cpu'):
         self.epoch_losses_recon = []
@@ -214,7 +203,7 @@ class RFAE():
             self.epoch_losses_balanced.append(running_balanced_loss / len(train_loader))
 
             # Periodic logging of losses
-            if epoch % 20 == 0:
+            if epoch % 50 == 0:
                 self.logger.info(
                     f"Epoch {epoch}/{epochs} "
                     f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f} "
@@ -222,15 +211,11 @@ class RFAE():
                 )
 
 
-    def transform(self, x, precomputed=False):
+    def transform(self, x):
         self.torch_module.eval()
-
-        if not precomputed:
-            x = self.embedder.prox_extend(x, self.prototype_indices).toarray()
- 
-
-        x = torch.tensor(x, dtype=torch.float)
-        x = F.normalize(x, p=1)
+        
+        x = self.embedder.extend_to_data(x)  # shape (n_samples, n_landmarks) or (n_samples, n_samples)
+        x = torch.tensor(x.toarray(), dtype=torch.float) if sparse.issparse(x) else torch.tensor(x, dtype=torch.float)
         
         loader = DataLoader(TensorDataset(x), batch_size=self.batch_size, shuffle=False)
 
@@ -245,7 +230,7 @@ class RFAE():
 
     def fit_transform(self, x, y):
         self.fit(x, y)
-        return self.transform(self.training_proximities, precomputed=True)
+        return self.embedding_
 
 
     def inverse_transform(self, x):
