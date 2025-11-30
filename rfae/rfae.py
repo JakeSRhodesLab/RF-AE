@@ -29,7 +29,7 @@ class RFAE():
                  embedder_params=None,
                  lam=1e-2,
                  dropout_prob=0.0,
-                 recon_loss_type='kl'):
+                 recon_loss_type='jsd'):
 
         self.logger = logging.getLogger(__name__)
         if not self.logger.hasHandlers():
@@ -63,21 +63,28 @@ class RFAE():
 
         self.logger.info(f"Using device: {self.device}")
 
-        self.embedder_params = embedder_params if embedder_params is not None else {'random_state': random_state,
-                                                                                    'n_components': n_components,
-                                                                                    'n_landmark': 2000,  # performs well in general, cf PHATE paper
-                                                                                    'prox_method': 'rfgap',  # 'rfgap' or 'original'
-                                                                                    'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
-                                                                                    'oob_score': False,  # may be useful to monitor Random Forest performance
-                                                                                    'non_zero_diagonal': True,  # important for training stability
-                                                                                    'force_symmetric': True,  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
-                                                                                    'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
-                                                                                    'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
-                                                                                    'verbose': 1,
-                                                                                    'n_jobs': -1,
-                                                                                    }
-        self.embedder_params['n_components'] = n_components  # ensure consistency with class param
-        self.embedder_params['random_state'] = random_state  # ensure consistency with class param
+        # Default parameters for RFPHATE
+        default_embedder_params = {
+            'random_state': random_state,
+            'n_components': n_components,
+            'n_landmark': 2000,  # performs well in general, cf PHATE paper
+            'prox_method': 'rfgap',  # 'rfgap' or 'original'
+            'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
+            'oob_score': False,  # set to True to monitor Random Forest performance
+            'non_zero_diagonal': True,  # important for training stability
+            'force_symmetric': True,  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
+            'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
+            'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
+            'verbose': 0,
+            'n_jobs': -1,
+        }
+        
+        # Merge defaults with user overrides (if provided)
+        if embedder_params is None:
+            self.embedder_params = default_embedder_params
+        else:
+            self.embedder_params = {**default_embedder_params, **embedder_params}
+
         self.embedder = RFPHATE(**self.embedder_params)
         
 
