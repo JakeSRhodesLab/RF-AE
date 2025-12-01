@@ -62,7 +62,6 @@ else:
 # Initialize the RFAE model
 rfae = RFAE(
     n_components=2,          # Desired final embedding dimension
-    hidden_dims=[100, 50],   # AE hidden layers
     epochs=100,              # Training epochs for the AE
     lam=0.01,                # Weight for reconstruction loss
     device=device,           # Use the detected device
@@ -100,22 +99,18 @@ These are the arguments you can pass when creating an `RFAE` instance:
   * **`random_state`** (`int`, default: `None`): A seed to ensure reproducible results.
   * **`device`** (`str`, default: auto-detected `cuda`, `mps` or `cpu`): The device to run the neural network training on.
   * **`epochs`** (`int`, default: `200`): The number of epochs to train the autoencoder.
-  * **`hidden_dims`** (`list[int]`, default: `[800, 400, 100]`): A list of integers defining the dimensions of the autoencoder's **encoder** hidden layers. The decoder is built as the mirror reverse of this.
-  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters to pass directly to the underlying `RFPHATE` model. If `None`, a set of defaults is used (e.g., `n_estimators=500`).
+  * **`hidden_dims`** (`list[int]`, default: `None`): A list of integers defining the dimensions of the encoder hidden layers. The decoder is built as the mirror reverse of this. If `None`, hidden dimensions are dynamically set according to the RF-AE network input size: `[0.4*input_shape, 0.2*input_shape, 0.05*input_shape]`
+  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters to pass directly to the underlying `RFPHATE` model. If `None`, a set of defaults is used.
   * **`lam`** (`float`, default: `1e-2`): The weighting factor for the combined loss function: `balanced_loss = lam * loss_recon + (1 - lam) * loss_emb`.
       * `lam=1.0`: Only trains on reconstruction loss.
       * `lam=0.0`: Only trains on geometric (embedding) loss.
       * If transition-like structure is expected, consider decreasing it to `lam=1e-3` or `lam=1e-4` to better align with RF-PHATE. To emphasize on class internal structure and better separability, consider increasing to `lam=1e-1`.
       * Overall, values between `lam=1e-2` and `lam=1e-3` offer a good balance.
       *	Avoid extreme values such as `lam=0.0` and `lam=1.0`, which distort the embedding and over-compress it, respectively.
-      
-  * **`n_prototypes`** (`float`, default: `500`): The number of training data points to select as "prototypes" using uniform class-wise k-medoids. That is, `k_per_class = max(1, n_prototypes // len(classes))` per-class prototypes are detemined using k-medoids applied on each class separately. For memory efficiency, a random subset of `min(class_size, 30 * k_per_class)` samples per class is selected before clustering to prevent from densifying huge matrices. The autoencoder's input and output will be the proximity to these prototypes.
-
   * **`dropout_prob`** (`float`, default: `0.0`): The dropout probability to use in the autoencoder's hidden layers.
-  * **`recon_loss_type`** (`str`, default: `'kl'`): The loss function for the reconstruction task. Options are:
-      * `'kl'`: Kullback-Leibler Divergence (recommended, stable).
-      * `'jsd'`: Jensen-Shannon Divergence (good for balancing local and global reconstruction, but less stable than KL with very sparse inputs).
-      * `'mse'`: Mean Squared Error.
+  * **`recon_loss_type`** (`str`, default: `'jsd'`): The loss function for the reconstruction task. Options are:
+      * `'kl'`: Kullback-Leibler Divergence (stable, emphasizes on local proximity reconstruction).
+      * `'jsd'`: Jensen-Shannon Divergence (better than KL for balancing local and global reconstruction due to the introduction of repulsive forces, but slightly less stable than KL).
 
 
 
@@ -125,7 +120,7 @@ These are the arguments you can pass when creating an `RFAE` instance:
 
 Fits the entire model. This is a two-stage process:
 
-1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and `self.training_proximities`.
+1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and the RF-GAP diffusion operator used as input to the RF-AE network.
 2.  Trains the internal PyTorch autoencoder to optimize the balanced reconstruction and geometric loss.
 
 <!-- end list -->
@@ -133,24 +128,23 @@ Fits the entire model. This is a two-stage process:
   * **`x`** (`np.ndarray`): The training data, shape `(n_samples, n_features)`.
   * **`y`** (`np.ndarray`): The training labels, shape `(n_samples,)`.
 
-#### `transform(x, precomputed=False)`
+#### `transform(x)`
 
 Generates the low-dimensional embedding for new data.
 
-1.  Calculates the proximity of `x` to the training prototypes (from `fit`).
+1.  Calculates the proximity of `x` to the training landmarks (from `fit`).
 2.  Passes these proximities through the trained **encoder**.
 
 <!-- end list -->
 
   * **`x`** (`np.ndarray`): The new data to transform, shape `(n_new_samples, n_features)`.
-  * **`precomputed`** (`bool`): If `True`, the model assumes `x` is *already* a proximity matrix, not raw data. This is used internally by `fit_transform`.
   * **Returns** (`np.ndarray`): The low-dimensional embedding, shape `(n_new_samples, n_components)`.
 
 **Important note:** Calling `transform()` on the training set after `fit()` does **not** return the true training embeddings. This is because `transform()` first computes proximities using the extended out-of-bag RFGAP definition, which treats the input `x` as out-of-sample. To obtain the correct training embeddings, use `fit_transform()` directly.
 
 #### `fit_transform(x, y)`
 
-A convenience method that calls `fit(x, y)` and then `transform(self.training_proximities, precomputed=True)`.
+A convenience method that calls `fit(x, y)` and returns the training embeddings.
 
   * **`x`** (`np.ndarray`): The training data, shape `(n_samples, n_features)`.
   * **`y`** (`np.ndarray`): The training labels, shape `(n_samples,)`.

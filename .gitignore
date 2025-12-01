@@ -1,6 +1,9 @@
 # vscode workspace settings
 .vscode/
 
+# experiment files
+experiments/
+
 # MacOS
 .DS_Store
 
