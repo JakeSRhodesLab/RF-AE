@@ -1,4 +1,3 @@
 rfphate @ git+https://github.com/jakerhodes/RF-PHATE
-kmedoids
 setuptools
 torch
