@@ -100,7 +100,7 @@ These are the arguments you can pass when creating an `RFAE` instance:
   * **`device`** (`str`, default: auto-detected `cuda`, `mps` or `cpu`): The device to run the neural network training on.
   * **`epochs`** (`int`, default: `200`): The number of epochs to train the autoencoder.
   * **`hidden_dims`** (`list[int]`, default: `None`): A list of integers defining the dimensions of the encoder hidden layers. The decoder is built as the mirror reverse of this. If `None`, hidden dimensions are dynamically set according to the RF-AE network input size: `[0.4*input_shape, 0.2*input_shape, 0.05*input_shape]`
-  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters to pass directly to the underlying `RFPHATE` model. If `None`, a set of defaults is used.
+  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters to pass directly to the underlying `RFPHATE` model. If `None`, a set of defaults is used. The parameter key `n_landmark` (default: `2000`) determines the input size of the RF-AE network (vectors of row-normalized proximities to landmarks instead of the whole training set) for scalable training.
   * **`lam`** (`float`, default: `1e-2`): The weighting factor for the combined loss function: `balanced_loss = lam * loss_recon + (1 - lam) * loss_emb`.
       * `lam=1.0`: Only trains on reconstruction loss.
       * `lam=0.0`: Only trains on geometric (embedding) loss.
@@ -155,11 +155,11 @@ A convenience method that calls `fit(x, y)` and returns the training embeddings.
 Takes a low-dimensional embedding and passes it through the **decoder** to reconstruct the proximity matrix.
 
   * **`x`** (`np.ndarray`): A low-dimensional embedding, shape `(n_samples, n_components)`.
-  * **Returns** (`np.ndarray`): The reconstructed proximity matrix, shape `(n_samples, n_prototypes)`.
+  * **Returns** (`np.ndarray`): The reconstructed proximity matrix, shape `(n_samples, n_landmark)`.
 
 #### `reconstruct(x)`
 
 A convenience method that chains `transform` and `inverse_transform`. It maps raw data `x` to its low-D embedding and then decodes that embedding back into its reconstructed proximity matrix.
 
   * **`x`** (`np.ndarray`): The raw data to reconstruct, shape `(n_new_samples, n_features)`.
-  * **Returns** (`np.ndarray`): The reconstructed proximity matrix, shape `(n_new_samples, n_prototypes)`.
+  * **Returns** (`np.ndarray`): The reconstructed proximity matrix, shape `(n_new_samples, n_landmark)`.
