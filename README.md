@@ -2,7 +2,7 @@
 
 This repository provides the PyTorch implementation of RF-AE (Random Forest Autoencoder), a hybrid supervised dimensionality reduction framework that combines Random-Forest–guided manifold learning with neural autoencoders. RF-AE integrates the RF-PHATE embedder with a neural autoencoder to learn low-dimensional representations that preserve label-aware geometric structure from the input data.
 
-The accompanying paper, accepted at **NeurIPS 2025**, is available at [https://arxiv.org/abs/2502.13257v2](https://arxiv.org/abs/2502.13257v2). To fully reproduce the experiments and figures from the paper, including trained models and datasets, please refer to the following [source code and data repository](https://udemontreal-my.sharepoint.com/:f:/g/personal/adrien_aumon_umontreal_ca/ElMq7KdbaShBg6Pv3gioXyEBLygJKpGLH5-HBv5VQRvjmQ?e=hUFtl7).
+The accompanying paper, accepted at **NeurIPS 2025**, is available at [https://openreview.net/forum?id=NjxW4m6KdH](https://openreview.net/forum?id=NjxW4m6KdH). To fully reproduce the experiments and figures from the paper, including trained models and datasets, please refer to the following [source code and data repository](https://udemontreal-my.sharepoint.com/:f:/g/personal/adrien_aumon_umontreal_ca/ElMq7KdbaShBg6Pv3gioXyEBLygJKpGLH5-HBv5VQRvjmQ?e=hUFtl7).
 
 
 
