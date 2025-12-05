@@ -1,6 +1,6 @@
-# Random Forest Autoencoder (RF-AE)
+# Random Forest Autoencoders (RF-AE) 🌲🌿
 
-This repository provides the PyTorch implementation of RF-AE (Random Forest Autoencoder), a hybrid supervised dimensionality reduction framework that combines Random-Forest–guided manifold learning with neural autoencoders. RF-AE integrates the RF-PHATE embedder with a neural autoencoder to learn low-dimensional representations that preserve label-aware geometric structure from the input data.
+This repository provides the PyTorch implementation of RF-AE (Random Forest Autoencoders), a hybrid supervised dimensionality reduction framework that combines Random-Forest–guided manifold learning with neural autoencoders. RF-AE integrates the RF-PHATE embedder with a neural autoencoder to learn low-dimensional representations that preserve label-aware geometric structure from the input data.
 
 The accompanying paper, accepted at **NeurIPS 2025**, is available at [https://openreview.net/forum?id=NjxW4m6KdH](https://openreview.net/forum?id=NjxW4m6KdH). To fully reproduce the experiments and figures from the paper, including trained models and datasets, please refer to the following [source code and data repository](https://udemontreal-my.sharepoint.com/:f:/g/personal/adrien_aumon_umontreal_ca/ElMq7KdbaShBg6Pv3gioXyEBLygJKpGLH5-HBv5VQRvjmQ?e=hUFtl7).
 
@@ -93,7 +93,7 @@ The `RFAE` class is the main entry point for the model.
 These are the arguments you can pass when creating an `RFAE` instance:
 
   * **`n_components`** (`int`, default: `2`): The target dimensionality for the final embedding (i.e., the size of the autoencoder's bottleneck).
-  * **`batch_size`** (`int`, default: `512`): The batch size for training the autoencoder.
+  * **`batch_size`** (`int`, default: `512`): The batch size for training the autoencoder. RF-AE likes large batch sizes. Consider increasing this hyperparameter for faster training.
   * **`lr`** (`float`, default: `1e-3`): The learning rate for the `AdamW` optimizer used to train the autoencoder.
   * **`weight_decay`** (`float`, default: `1e-5`): The weight decay (L2 regularization) for the `AdamW` optimizer.
   * **`random_state`** (`int`, default: `None`): A seed to ensure reproducible results.
