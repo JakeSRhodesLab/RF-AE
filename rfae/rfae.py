@@ -72,7 +72,7 @@ class RFAE():
             'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
             'oob_score': False,  # set to True to monitor Random Forest performance
             'non_zero_diagonal': True,  # important for training stability
-            'force_symmetric': True,  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
+            'symm_mode': 'arithmetic',  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
             'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
             'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
             'verbose': 0,
