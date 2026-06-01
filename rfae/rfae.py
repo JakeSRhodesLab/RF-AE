@@ -63,22 +63,24 @@ class RFAE():
 
         self.logger.info(f"Using device: {self.device}")
 
-        # Default parameters for RFPHATE
+        # Default parameters for the forestgeom-backed RFPHATE API.
         default_embedder_params = {
             'random_state': random_state,
             'n_components': n_components,
             'n_landmark': 2000,  # performs well in general, cf PHATE paper
-            'prox_method': 'rfgap',  # 'rfgap' or 'original'
+            'kernel_method': 'gap',  # 'uniform', 'oob', or 'gap'
             'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
-            'oob_score': False,  # set to True to monitor Random Forest performance
-            'non_zero_diagonal': True,  # important for training stability
-            'symm_mode': 'arithmetic',  # Direct built-in RF-GAP symmetrization (sparse block multiplication can introduce small asymmetries)
+            'adjust_diagonal': True,  # important for training stability
+            'force_symmetric': True,  # use RF-PHATE's efficient kernel symmetrization
             'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
             'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
             'verbose': 0,
-            'n_jobs': -1,
+            'forest_kwargs': {
+                'n_jobs': -1,
+            },
+            'phate_kwargs': {},
         }
-        
+
         # Merge defaults with user overrides (if provided)
         if embedder_params is None:
             self.embedder_params = default_embedder_params
@@ -86,7 +88,7 @@ class RFAE():
             self.embedder_params = {**default_embedder_params, **embedder_params}
 
         self.embedder = RFPHATE(**self.embedder_params)
-        
+
 
     def init_torch_module(self):
         output_activation = {
@@ -131,10 +133,11 @@ class RFAE():
 
         self.z_target = self.embedder.fit_transform(x, y)
 
-        if isinstance(self.embedder.phate_op.graph, graphtools.graphs.LandmarkGraph):
-            transitions = self.embedder.phate_op.graph.transitions  # landmark graph transitions, shape (n_samples, n_landmarks)
+        graph = self.embedder.phate_op_.graph
+        if isinstance(graph, graphtools.graphs.LandmarkGraph):
+            transitions = graph.transitions  # landmark graph transitions, shape (n_samples, n_landmarks)
         else:
-            transitions = self.embedder.phate_op.graph.diff_op  # traditional graph transitions, shape (n_samples, n_samples)   
+            transitions = graph.diff_op  # traditional graph transitions, shape (n_samples, n_samples)
 
         self.input_shape = transitions.shape[1]
         self.init_torch_module()
@@ -251,4 +254,3 @@ class RFAE():
 
     def reconstruct(self, x):
         return self.inverse_transform(self.transform(x))
-        
