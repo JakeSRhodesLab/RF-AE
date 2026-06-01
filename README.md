@@ -41,8 +41,8 @@ Here is a basic example of how to use the `RFAE` class.
 
 ```python
 import numpy as np
-from rfae import RFAE # Assuming your class is in rfae.py
 import torch
+from rfae import RFAE
 
 # Create dummy data
 n_samples = 1000
@@ -100,7 +100,7 @@ These are the arguments you can pass when creating an `RFAE` instance:
   * **`device`** (`str`, default: auto-detected `cuda`, `mps` or `cpu`): The device to run the neural network training on.
   * **`epochs`** (`int`, default: `200`): The number of epochs to train the autoencoder.
   * **`hidden_dims`** (`list[int]`, default: `None`): A list of integers defining the dimensions of the encoder hidden layers. The decoder is built as the mirror reverse of this. If `None`, hidden dimensions are dynamically set according to the RF-AE network input size: `[0.4*input_shape, 0.2*input_shape, 0.05*input_shape]`
-  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters to pass directly to the underlying `RFPHATE` model. If `None`, a set of defaults is used. The parameter key `n_landmark` (default: `2000`) determines the input size of the RF-AE network (vectors of row-normalized proximities to landmarks instead of the whole training set) for scalable training.
+  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters passed directly to the forestgeom-backed `rfphate.RFPHATE` model. User-provided keys override RF-AE's defaults. The parameter key `n_landmark` (default: `2000`) determines the input size of the RF-AE network by using row-normalized proximities to landmarks instead of the full training set for scalable training.
   * **`lam`** (`float`, default: `1e-2`): The weighting factor for the combined loss function: `balanced_loss = lam * loss_recon + (1 - lam) * loss_emb`.
       * `lam=1.0`: Only trains on reconstruction loss.
       * `lam=0.0`: Only trains on geometric (embedding) loss.
@@ -112,6 +112,50 @@ These are the arguments you can pass when creating an `RFAE` instance:
       * `'kl'`: Kullback-Leibler Divergence (stable, emphasizes on local proximity reconstruction).
       * `'jsd'`: Jensen-Shannon Divergence (better than KL for balancing local and global reconstruction due to the introduction of repulsive forces, but slightly less stable than KL).
 
+### Default `RFPHATE` Parameters
+
+When `embedder_params=None`, RF-AE initializes `RFPHATE` with defaults tuned for the current forestgeom-backed RF-PHATE API:
+
+```python
+{
+    "random_state": random_state,
+    "n_components": n_components,
+    "n_landmark": 2000,
+    "kernel_method": "gap",
+    "model_type": "rf",
+    "adjust_diagonal": True,
+    "force_symmetric": True,
+    "kernel_symm": None,
+    "self_similarity": False,
+    "verbose": 0,
+    "forest_kwargs": {
+        "n_jobs": -1,
+    },
+    "phate_kwargs": {},
+}
+```
+
+Common overrides:
+
+```python
+rfae = RFAE(
+    embedder_params={
+        "n_landmark": 1000,
+        "model_type": "et",  # "rf" for Random Forest or "et" for Extra Trees
+        "forest_kwargs": {
+            "n_estimators": 500,
+            "n_jobs": -1,
+        },
+        "phate_kwargs": {
+            "t": "auto",
+        },
+    }
+)
+```
+
+`embedder_params` is merged shallowly with these defaults. If you override `forest_kwargs` or `phate_kwargs`, provide the full nested dictionary you want to pass to `RFPHATE`.
+
+
 
 
 ### Class Methods
@@ -120,7 +164,7 @@ These are the arguments you can pass when creating an `RFAE` instance:
 
 Fits the entire model. This is a two-stage process:
 
-1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and the RF-GAP diffusion operator used as input to the RF-AE network.
+1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and the RF-GAP diffusion operator used as input to the RF-AE network. Internally, RF-AE reads the fitted graph from `self.embedder.phate_op_.graph`, matching the current `RFPHATE` fitted-attribute API.
 2.  Trains the internal PyTorch autoencoder to optimize the balanced reconstruction and geometric loss.
 
 <!-- end list -->
@@ -132,7 +176,7 @@ Fits the entire model. This is a two-stage process:
 
 Generates the low-dimensional embedding for new data.
 
-1.  Calculates the proximity of `x` to the training landmarks (from `fit`).
+1.  Calculates the proximity of `x` to the training landmarks (from `fit`) with `self.embedder.extend_to_data(x)`.
 2.  Passes these proximities through the trained **encoder**.
 
 <!-- end list -->
