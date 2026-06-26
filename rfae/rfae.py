@@ -1,8 +1,6 @@
-import os
 import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import logging
 import graphtools
@@ -69,16 +67,16 @@ class RFAE():
             'n_components': n_components,
             'n_landmark': 2000,  # performs well in general, cf PHATE paper
             'kernel_method': 'gap',  # 'uniform', 'oob', or 'gap'
-            'model_type': 'rf',  # 'rf' (Random Forest) or 'et' (Extra Trees)
+            'model_type': 'rf',  # 'rf' (Random Forest), 'et' (Extra Trees), or 'gbt' (Gradient Boosted Trees)
+            'n_jobs': -1,
             'adjust_diagonal': True,  # important for training stability
             'force_symmetric': True,  # use RF-PHATE's efficient kernel symmetrization
             'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
             'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
             'verbose': 0,
-            'forest_kwargs': {
-                'n_jobs': -1,
-            },
-            'phate_kwargs': {},
+            'forest_params': {},
+            'proximity_params': {},
+            'phate_params': {},
         }
 
         # Merge defaults with user overrides (if provided)

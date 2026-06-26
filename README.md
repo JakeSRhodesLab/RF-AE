@@ -123,15 +123,15 @@ When `embedder_params=None`, RF-AE initializes `RFPHATE` with defaults tuned for
     "n_landmark": 2000,
     "kernel_method": "gap",
     "model_type": "rf",
+    "n_jobs": -1,
     "adjust_diagonal": True,
     "force_symmetric": True,
     "kernel_symm": None,
     "self_similarity": False,
     "verbose": 0,
-    "forest_kwargs": {
-        "n_jobs": -1,
-    },
-    "phate_kwargs": {},
+    "forest_params": {},
+    "proximity_params": {},
+    "phate_params": {},
 }
 ```
 
@@ -141,19 +141,19 @@ Common overrides:
 rfae = RFAE(
     embedder_params={
         "n_landmark": 1000,
-        "model_type": "et",  # "rf" for Random Forest or "et" for Extra Trees
-        "forest_kwargs": {
+        "model_type": "et",  # "rf" for Random Forest, "et" for Extra Trees, or "gbt" for Gradient Boosted Trees
+        "n_jobs": -1,
+        "forest_params": {
             "n_estimators": 500,
-            "n_jobs": -1,
         },
-        "phate_kwargs": {
+        "phate_params": {
             "t": "auto",
         },
     }
 )
 ```
 
-`embedder_params` is merged shallowly with these defaults. If you override `forest_kwargs` or `phate_kwargs`, provide the full nested dictionary you want to pass to `RFPHATE`.
+`embedder_params` is merged shallowly with these defaults. If you override `forest_params`, `proximity_params`, or `phate_params`, provide the full nested dictionary you want to pass to `RFPHATE`.
 
 
 
