@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -79,6 +80,58 @@ class ProxAETorchModule(nn.Module):
         recon = self.decoder(z)
         recon = self.final_activation(recon)
         return recon, z
+
+class InvProxAETorchModule(ProxAETorchModule):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dims,
+        z_dim,
+        output_dim,
+        inverse_hidden_dims=None,
+        recon_dim=None,
+        dropout_prob=0,
+    ):
+        """
+        Args:
+            input_dim (int): Dimension of input data
+            hidden_dims (list of int): List of autoencoder hidden layer dimensions
+            z_dim (int): Latent space dimension
+            output_dim (int): Mandatory dimension of the final linear output
+            inverse_hidden_dims (list of int, optional): Hidden dimensions added after
+                the ProxAETorchModule reconstruction output. Defaults to no hidden layer.
+            recon_dim (int, optional): Dimension of ProxAETorchModule reconstruction
+                output before the inverse head. Defaults to input_dim.
+            dropout_prob (float): Dropout probability
+        """
+        if output_dim is None:
+            raise ValueError("output_dim must be specified")
+
+        if recon_dim is None:
+            recon_dim = input_dim
+
+        super().__init__(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            z_dim=z_dim,
+            output_activation='none',
+            recon_dim=recon_dim,
+            dropout_prob=dropout_prob,
+        )
+
+        if inverse_hidden_dims is None:
+            inverse_hidden_dims = []
+
+        inverse_list = [recon_dim] + list(inverse_hidden_dims) + [output_dim]
+        self.inverse_head = LinearBlock(
+            dim_list=inverse_list,
+            dropout_prob=dropout_prob,
+        )
+
+    def forward(self, x):
+        prox_recon, z = super().forward(x)
+        recon = self.inverse_head(prox_recon)
+        return recon, prox_recon, z
     
 class JSDivLoss(nn.Module):
     def __init__(self, reduction='batchmean', eps=1e-8):
@@ -94,3 +147,24 @@ class JSDivLoss(nn.Module):
             F.kl_div(m.log(), p, reduction=self.reduction) +
             F.kl_div(m.log(), q, reduction=self.reduction)
         )
+
+class PotentialLoss(nn.Module):
+    def __init__(self, reduction="mean", eps=1e-8):
+        super().__init__()
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, p, q):
+        p_potential = -torch.log(p.clamp(min=self.eps, max=1.0))
+        q_potential = -torch.log(q.clamp(min=self.eps, max=1.0))
+
+        loss = ((p_potential - q_potential) ** 2).sum(dim=1)
+
+        if self.reduction == "none":
+            return loss
+        elif self.reduction == "sum":
+            return loss.sum()
+        elif self.reduction == "mean":
+            return loss.mean()
+
+        raise ValueError(f"Unsupported reduction: {self.reduction}")
