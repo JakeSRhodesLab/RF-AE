@@ -8,7 +8,7 @@ from scipy import sparse
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
-from .torch_models import ProxAETorchModule, JSDivLoss
+from .torch_models import ProxAETorchModule, JSDivLoss, PotentialLoss
 from rfae.utils.numpy_dataset import FromNumpyDataset
 from rfae.utils.set_seeds import seed_everything
 
@@ -25,6 +25,7 @@ class RFAE():
                  epochs=200,
                  hidden_dims=None,
                  embedder_params=None,
+                 diffuse=True,
                  dropout_prob=0.0,
                  recon_loss_type='jsd'):
 
@@ -45,6 +46,7 @@ class RFAE():
         self.random_state = random_state
         self.epochs = epochs
         self.hidden_dims = hidden_dims
+        self.diffuse = diffuse
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
 
@@ -83,10 +85,14 @@ class RFAE():
 
 
     def init_torch_module(self):
-        output_activation = {
+        output_activations = {
             'kl': 'log_softmax',
-            'jsd': 'softmax'
-        }[self.recon_loss_type]
+            'jsd': 'softmax',  # JSD is bounded, so easier to optimize in a coupled prox-feature space model
+            'potential': 'softmax',  # better for a direct connection to PHATE
+        }
+        if self.recon_loss_type not in output_activations:
+            raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
+        output_activation = output_activations[self.recon_loss_type]
 
         self.logger.info(f"Initializing RF-AE module with output activation: {output_activation}")
         self.logger.info(f"Input shape: {self.input_shape}")
@@ -112,6 +118,8 @@ class RFAE():
             self.criterion_recon = nn.KLDivLoss(reduction="batchmean")
         elif self.recon_loss_type == 'jsd':
             self.criterion_recon = JSDivLoss(reduction='batchmean')
+        elif self.recon_loss_type == 'potential':
+            self.criterion_recon = PotentialLoss(reduction='mean')
         else:
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
     
@@ -139,9 +147,9 @@ class RFAE():
     
             # M x M landmark diffusion operator
             landmark_op = self._to_numpy(graph.landmark_op)
-            P_landmark_t = np.linalg.matrix_power(landmark_op, t)
+            P_landmark_t = self._sum_transition_powers(landmark_op, t)
     
-            # N x M point-to-landmark t-step operator
+            # N x M point-to-landmark operator aggregated over diffusion steps 1..t
             return self._row_normalize(self._to_numpy(P @ P_landmark_t))
     
         else:
@@ -151,8 +159,20 @@ class RFAE():
             if not diffuse:
                 return P
     
-            # N x N point-to-point t-step operator
-            return self._row_normalize(np.linalg.matrix_power(P, t))
+            # N x N point-to-point operator aggregated over diffusion steps 1..t
+            return self._row_normalize(self._sum_transition_powers(P, t))
+
+
+    @staticmethod
+    def _sum_transition_powers(matrix, t):
+        current = np.asarray(matrix)
+        transition_sum = current.copy()
+
+        for _ in range(2, t + 1):
+            current = current @ matrix
+            transition_sum += current
+
+        return transition_sum
 
 
     @staticmethod
@@ -183,7 +203,10 @@ class RFAE():
 
         phate_op = self.embedder.phate_op_
         transitions = self._build_transition_matrix(phate_op, diffuse=False)
-        transitions_diffused = self._build_transition_matrix(phate_op, diffuse=True)
+        transitions_diffused = self._build_transition_matrix(
+            phate_op,
+            diffuse=self.diffuse,
+        )
 
         self.input_shape = transitions.shape[1]
         self.init_torch_module()
