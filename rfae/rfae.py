@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 import graphtools
+from numbers import Integral
 from scipy import sparse
 
 from torch.utils.data import TensorDataset, DataLoader
@@ -12,11 +13,13 @@ from .torch_models import ProxAETorchModule, JSDivLoss, PotentialLoss
 from rfae.utils.numpy_dataset import FromNumpyDataset
 from rfae.utils.set_seeds import seed_everything
 
+import sys
 
 
 class RFAE():
     def __init__(self,
                  n_components=2,
+                 t='auto',
                  batch_size=512,
                  lr=1e-3,
                  weight_decay=1e-5,
@@ -25,7 +28,6 @@ class RFAE():
                  epochs=200,
                  hidden_dims=None,
                  embedder_params=None,
-                 diffuse=True,
                  dropout_prob=0.0,
                  recon_loss_type='jsd'):
 
@@ -46,7 +48,7 @@ class RFAE():
         self.random_state = random_state
         self.epochs = epochs
         self.hidden_dims = hidden_dims
-        self.diffuse = diffuse
+        self.t = t
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
 
@@ -69,18 +71,17 @@ class RFAE():
             },
             'phate_params': {
                 'n_components': n_components,
-                't': 'auto',
+                't': t,
                 'n_landmark': 2000,  # performs well in general, cf PHATE paper
                 'kernel_symm': None,  # disable PHATE internal symmetrization by default
-                'verbose': 0,
+                'verbose': 1,
             },
         }
 
-        self.embedder_params = (
-            default_embedder_params
-            if embedder_params is None
-            else dict(embedder_params)
-        )
+        self.embedder_params = default_embedder_params if embedder_params is None else dict(embedder_params)
+        self.embedder_params.setdefault('phate_params', {})
+        self.embedder_params['phate_params'] = dict(self.embedder_params['phate_params'])
+        self.embedder_params['phate_params']['t'] = t
         self.embedder = RFPHATE(**self.embedder_params)
 
 
@@ -124,63 +125,44 @@ class RFAE():
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
     
     
-    def _build_transition_matrix(self, phate_op, diffuse=True):
-        graph = phate_op.graph
-        if graph is None:
-            raise ValueError("PHATE operator must be fitted first.")
-    
-        # Use the fitted PHATE choice of t
-        if phate_op.t == "auto":
-            t = phate_op.optimal_t
-            if t is None and hasattr(phate_op, "_find_optimal_t"):
-                t = phate_op._find_optimal_t()
-        else:
-            t = phate_op.t
-        t = int(t)
+    def _build_transition_matrices(self, fitted_phate_op):
+        graph = fitted_phate_op.graph
+        t = fitted_phate_op._find_optimal_t() if self.t == "auto" else self.t
     
         if isinstance(graph, graphtools.graphs.LandmarkGraph):
-            # N x M point-to-landmark one-step operator
-            P = graph.transitions
+            point_to_landmark = self._to_numpy(graph.transitions)
+            landmark_to_landmark = self._to_numpy(graph.landmark_op)
+            target = point_to_landmark @ self._aggregate_transition_powers(
+                landmark_to_landmark, t
+            )
+            return point_to_landmark, self._row_normalize(target)
     
-            if not diffuse:
-                return P
+        point_to_point = self._to_numpy(graph.diff_op)
+        target = self._aggregate_transition_powers(point_to_point, t)
     
-            # M x M landmark diffusion operator
-            landmark_op = self._to_numpy(graph.landmark_op)
-            P_landmark_t = self._sum_transition_powers(landmark_op, t)
+        return point_to_point, self._row_normalize(target)
     
-            # N x M point-to-landmark operator aggregated over diffusion steps 1..t
-            return self._row_normalize(self._to_numpy(P @ P_landmark_t))
     
-        else:
-            # N x N point-to-point one-step operator
-            P = self._to_numpy(graph.diff_op)
-    
-            if not diffuse:
-                return P
-    
-            # N x N point-to-point operator aggregated over diffusion steps 1..t
-            return self._row_normalize(self._sum_transition_powers(P, t))
-
-
     @staticmethod
-    def _sum_transition_powers(matrix, t):
-        current = np.asarray(matrix)
-        transition_sum = current.copy()
-
+    def _aggregate_transition_powers(matrix, t):
+        matrix = np.asarray(matrix)
+    
+        current = matrix.copy()
+        aggregate = current.copy()
+    
         for _ in range(2, t + 1):
             current = current @ matrix
-            transition_sum += current
-
-        return transition_sum
-
-
+            aggregate += current
+    
+        return aggregate
+    
+    
     @staticmethod
     def _row_normalize(matrix):
         matrix = np.asarray(matrix)
         row_sums = matrix.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0
-        return matrix / row_sums
+    
+        return matrix / np.where(row_sums == 0, 1.0, row_sums)
 
 
     @staticmethod
@@ -202,11 +184,7 @@ class RFAE():
         )
 
         phate_op = self.embedder.phate_op_
-        transitions = self._build_transition_matrix(phate_op, diffuse=False)
-        transitions_diffused = self._build_transition_matrix(
-            phate_op,
-            diffuse=self.diffuse,
-        )
+        transitions, transition_target = self._build_transition_matrices(phate_op)
 
         self.input_shape = transitions.shape[1]
         self.init_torch_module()
@@ -214,8 +192,8 @@ class RFAE():
         self.optimizer = torch.optim.AdamW(self.torch_module.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
         transitions_tensor = torch.tensor(transitions.toarray(), dtype=torch.float) if sparse.issparse(transitions) else torch.tensor(transitions, dtype=torch.float)
-        transitions_diffused_tensor = torch.tensor(transitions_diffused.toarray(), dtype=torch.float) if sparse.issparse(transitions_diffused) else torch.tensor(transitions_diffused, dtype=torch.float)
-        dataset = TensorDataset(transitions_tensor, transitions_diffused_tensor)
+        transition_target_tensor = torch.tensor(transition_target.toarray(), dtype=torch.float) if sparse.issparse(transition_target) else torch.tensor(transition_target, dtype=torch.float)
+        dataset = TensorDataset(transitions_tensor, transition_target_tensor)
         train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.train_loop(self.torch_module, self.epochs, train_loader, self.optimizer, self.device)
