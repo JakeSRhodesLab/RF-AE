@@ -25,7 +25,6 @@ class RFAE():
                  epochs=200,
                  hidden_dims=None,
                  embedder_params=None,
-                 lam=1e-2,
                  dropout_prob=0.0,
                  recon_loss_type='jsd'):
 
@@ -46,7 +45,6 @@ class RFAE():
         self.random_state = random_state
         self.epochs = epochs
         self.hidden_dims = hidden_dims
-        self.lam = lam
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
 
@@ -61,30 +59,26 @@ class RFAE():
 
         self.logger.info(f"Using device: {self.device}")
 
-        # Default parameters for the forestgeom-backed RFPHATE API.
         default_embedder_params = {
             'random_state': random_state,
-            'n_components': n_components,
-            'n_landmark': 2000,  # performs well in general, cf PHATE paper
-            'kernel_method': 'gap',  # 'uniform', 'oob', or 'gap'
-            'model_type': 'rf',  # 'rf' (Random Forest), 'et' (Extra Trees), or 'gbt' (Gradient Boosted Trees)
             'n_jobs': -1,
-            'adjust_diagonal': True,  # important for training stability
-            'force_symmetric': True,  # use RF-PHATE's efficient kernel symmetrization
-            'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
-            'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
-            'verbose': 0,
-            'forest_params': {},
-            'proximity_params': {},
-            'phate_params': {},
+            'proximity_params': {
+                'weight_scheme': 'gap',
+            },
+            'phate_params': {
+                'n_components': n_components,
+                't': 'auto',
+                'n_landmark': 2000,  # performs well in general, cf PHATE paper
+                'kernel_symm': None,  # disable PHATE internal symmetrization by default
+                'verbose': 0,
+            },
         }
 
-        # Merge defaults with user overrides (if provided)
-        if embedder_params is None:
-            self.embedder_params = default_embedder_params
-        else:
-            self.embedder_params = {**default_embedder_params, **embedder_params}
-
+        self.embedder_params = (
+            default_embedder_params
+            if embedder_params is None
+            else dict(embedder_params)
+        )
         self.embedder = RFPHATE(**self.embedder_params)
 
 
@@ -114,28 +108,82 @@ class RFAE():
             dropout_prob=self.dropout_prob,
             output_activation=output_activation
         )
-        self.criterion_geo = nn.MSELoss()
         if self.recon_loss_type == 'kl':
             self.criterion_recon = nn.KLDivLoss(reduction="batchmean")
         elif self.recon_loss_type == 'jsd':
             self.criterion_recon = JSDivLoss(reduction='batchmean')
         else:
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
+    
+    
+    def _build_transition_matrix(self, phate_op, diffuse=True):
+        graph = phate_op.graph
+        if graph is None:
+            raise ValueError("PHATE operator must be fitted first.")
+    
+        # Use the fitted PHATE choice of t
+        if phate_op.t == "auto":
+            t = phate_op.optimal_t
+            if t is None and hasattr(phate_op, "_find_optimal_t"):
+                t = phate_op._find_optimal_t()
+        else:
+            t = phate_op.t
+        t = int(t)
+    
+        if isinstance(graph, graphtools.graphs.LandmarkGraph):
+            # N x M point-to-landmark one-step operator
+            P = graph.transitions
+    
+            if not diffuse:
+                return P
+    
+            # M x M landmark diffusion operator
+            landmark_op = self._to_numpy(graph.landmark_op)
+            P_landmark_t = np.linalg.matrix_power(landmark_op, t)
+    
+            # N x M point-to-landmark t-step operator
+            return self._row_normalize(self._to_numpy(P @ P_landmark_t))
+    
+        else:
+            # N x N point-to-point one-step operator
+            P = self._to_numpy(graph.diff_op)
+    
+            if not diffuse:
+                return P
+    
+            # N x N point-to-point t-step operator
+            return self._row_normalize(np.linalg.matrix_power(P, t))
+
+
+    @staticmethod
+    def _row_normalize(matrix):
+        matrix = np.asarray(matrix)
+        row_sums = matrix.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        return matrix / row_sums
+
+
+    @staticmethod
+    def _to_numpy(matrix):
+        return matrix.toarray() if sparse.issparse(matrix) else np.asarray(matrix)
 
     
-    def fit(self, x, y):
+    def fit(self, x, y, adjust_diagonal=True, force_symmetric=True):
         self.labels = y
 
         if self.random_state is not None:
             seed_everything(self.random_state)
 
-        self.z_target = self.embedder.fit_transform(x, y)
+        self.embedder.fit(
+            x,
+            y,
+            adjust_diagonal=adjust_diagonal,
+            force_symmetric=force_symmetric,
+        )
 
-        graph = self.embedder.phate_op_.graph
-        if isinstance(graph, graphtools.graphs.LandmarkGraph):
-            transitions = graph.transitions  # landmark graph transitions, shape (n_samples, n_landmarks)
-        else:
-            transitions = graph.diff_op  # traditional graph transitions, shape (n_samples, n_samples)
+        phate_op = self.embedder.phate_op_
+        transitions = self._build_transition_matrix(phate_op, diffuse=False)
+        transitions_diffused = self._build_transition_matrix(phate_op, diffuse=True)
 
         self.input_shape = transitions.shape[1]
         self.init_torch_module()
@@ -143,7 +191,8 @@ class RFAE():
         self.optimizer = torch.optim.AdamW(self.torch_module.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
         transitions_tensor = torch.tensor(transitions.toarray(), dtype=torch.float) if sparse.issparse(transitions) else torch.tensor(transitions, dtype=torch.float)
-        dataset = TensorDataset(transitions_tensor, torch.tensor(self.z_target, dtype=torch.float))
+        transitions_diffused_tensor = torch.tensor(transitions_diffused.toarray(), dtype=torch.float) if sparse.issparse(transitions_diffused) else torch.tensor(transitions_diffused, dtype=torch.float)
+        dataset = TensorDataset(transitions_tensor, transitions_diffused_tensor)
         train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.train_loop(self.torch_module, self.epochs, train_loader, self.optimizer, self.device)
@@ -165,57 +214,43 @@ class RFAE():
         return self
 
 
-    def compute_loss(self, x, x_hat, z, z_target):
-        loss_recon = self.criterion_recon(x_hat, x)
-        loss_emb = self.criterion_geo(z_target, z)
+    def compute_loss(self, x_hat, x_target):
+        loss_recon = self.criterion_recon(x_hat, x_target)
 
         self.recon_loss_temp = loss_recon.item()
-        self.emb_loss_temp = loss_emb.item()
-
-        balanced_loss = self.lam * loss_recon + (1 - self.lam) * loss_emb
-        self.balanced_loss = balanced_loss.item()
-        return balanced_loss
+        return loss_recon
 
 
     def train_loop(self, model, epochs, train_loader, optimizer, device = 'cpu'):
         self.epoch_losses_recon = []
-        self.epoch_losses_emb = []
-        self.epoch_losses_balanced = []
 
         model.to(device)
         model.train()
 
         for epoch in range(epochs):
             running_recon_loss = 0
-            running_emb_loss = 0
-            running_balanced_loss = 0
 
-            for x, z_target in train_loader:
+            for x, x_target in train_loader:
                 x = x.to(device)
-                z_target = z_target.to(device)
+                x_target = x_target.to(device)
 
-                recon, z = model(x)
+                recon, _ = model(x)
 
                 optimizer.zero_grad()
-                self.compute_loss(x, recon, z, z_target).backward()
+                self.compute_loss(recon, x_target).backward()
 
                 running_recon_loss += self.recon_loss_temp
-                running_emb_loss += self.emb_loss_temp
-                running_balanced_loss += self.balanced_loss
 
                 optimizer.step()
 
             # Track losses per epoch
             self.epoch_losses_recon.append(running_recon_loss / len(train_loader))
-            self.epoch_losses_emb.append(running_emb_loss / len(train_loader))
-            self.epoch_losses_balanced.append(running_balanced_loss / len(train_loader))
 
             # Periodic logging of losses
             if epoch % 50 == 0:
                 self.logger.info(
                     f"Epoch {epoch}/{epochs} "
-                    f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f} "
-                    f"- Geo Loss: {self.epoch_losses_emb[-1]:.7f}"
+                    f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f}"
                 )
 
 
@@ -236,8 +271,13 @@ class RFAE():
         return np.concatenate(z)
     
 
-    def fit_transform(self, x, y):
-        self.fit(x, y)
+    def fit_transform(self, x, y, adjust_diagonal=True, force_symmetric=True):
+        self.fit(
+            x,
+            y,
+            adjust_diagonal=adjust_diagonal,
+            force_symmetric=force_symmetric,
+        )
         return self.embedding_
 
 
