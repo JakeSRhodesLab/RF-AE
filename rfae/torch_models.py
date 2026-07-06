@@ -90,6 +90,7 @@ class InvProxAETorchModule(ProxAETorchModule):
         output_dim,
         inverse_hidden_dims=None,
         recon_dim=None,
+        output_activation='log_softmax',
         dropout_prob=0,
     ):
         """
@@ -102,6 +103,8 @@ class InvProxAETorchModule(ProxAETorchModule):
                 the ProxAETorchModule reconstruction output. Defaults to no hidden layer.
             recon_dim (int, optional): Dimension of ProxAETorchModule reconstruction
                 output before the inverse head. Defaults to input_dim.
+            output_activation (str): Activation for the ProxAETorchModule
+                reconstruction output.
             dropout_prob (float): Dropout probability
         """
         if output_dim is None:
@@ -114,7 +117,7 @@ class InvProxAETorchModule(ProxAETorchModule):
             input_dim=input_dim,
             hidden_dims=hidden_dims,
             z_dim=z_dim,
-            output_activation='none',
+            output_activation=output_activation,
             recon_dim=recon_dim,
             dropout_prob=dropout_prob,
         )

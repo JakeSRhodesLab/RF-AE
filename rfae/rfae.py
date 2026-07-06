@@ -9,11 +9,9 @@ from scipy import sparse
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
-from .torch_models import ProxAETorchModule, JSDivLoss, PotentialLoss
+from .torch_models import InvProxAETorchModule, JSDivLoss, PotentialLoss
 from rfae.utils.numpy_dataset import FromNumpyDataset
 from rfae.utils.set_seeds import seed_everything
-
-import sys
 
 
 class RFAE():
@@ -28,6 +26,7 @@ class RFAE():
                  epochs=200,
                  hidden_dims=None,
                  embedder_params=None,
+                 lam=0.5,
                  dropout_prob=0.0,
                  recon_loss_type='jsd'):
 
@@ -49,8 +48,12 @@ class RFAE():
         self.epochs = epochs
         self.hidden_dims = hidden_dims
         self.t = t
+        self.lam = lam
         self.dropout_prob = dropout_prob
         self.recon_loss_type = recon_loss_type.lower()
+        
+        if not 0 <= self.lam <= 1:
+            raise ValueError("lam must be between 0 and 1.")
 
         if device is not None:
             self.device = device
@@ -97,6 +100,7 @@ class RFAE():
 
         self.logger.info(f"Initializing RF-AE module with output activation: {output_activation}")
         self.logger.info(f"Input shape: {self.input_shape}")
+        self.logger.info(f"Output shape: {self.output_shape}")
 
         self.hidden_dims_ratios = [0.4, 0.2, 0.05] # Default ratios
         if self.hidden_dims is None:
@@ -108,10 +112,11 @@ class RFAE():
             ]
             self.logger.info(f"Dynamically set hidden_dims to: {self.hidden_dims}")
 
-        self.torch_module = ProxAETorchModule(
+        self.torch_module = InvProxAETorchModule(
             input_dim=self.input_shape,
             hidden_dims=self.hidden_dims,
             z_dim=self.n_components,
+            output_dim=self.output_shape,
             dropout_prob=self.dropout_prob,
             output_activation=output_activation
         )
@@ -123,6 +128,7 @@ class RFAE():
             self.criterion_recon = PotentialLoss(reduction='mean')
         else:
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
+        self.criterion_feature_recon = nn.MSELoss()
     
     
     def _build_transition_matrices(self, fitted_phate_op):
@@ -187,13 +193,15 @@ class RFAE():
         transitions, transition_target = self._build_transition_matrices(phate_op)
 
         self.input_shape = transitions.shape[1]
+        self.output_shape = x.shape[1]
         self.init_torch_module()
 
         self.optimizer = torch.optim.AdamW(self.torch_module.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
         transitions_tensor = torch.tensor(transitions.toarray(), dtype=torch.float) if sparse.issparse(transitions) else torch.tensor(transitions, dtype=torch.float)
         transition_target_tensor = torch.tensor(transition_target.toarray(), dtype=torch.float) if sparse.issparse(transition_target) else torch.tensor(transition_target, dtype=torch.float)
-        dataset = TensorDataset(transitions_tensor, transition_target_tensor)
+        feature_target_tensor = torch.tensor(x.toarray(), dtype=torch.float) if sparse.issparse(x) else torch.tensor(x, dtype=torch.float)
+        dataset = TensorDataset(transitions_tensor, transition_target_tensor, feature_target_tensor)
         train_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.train_loop(self.torch_module, self.epochs, train_loader, self.optimizer, self.device)
@@ -206,7 +214,7 @@ class RFAE():
         eval_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
         
         with torch.no_grad():
-            for x_batch, _ in eval_loader:
+            for x_batch, _, _ in eval_loader:
                 z_batch = self.torch_module.encoder(x_batch.to(self.device)).cpu().numpy()
                 z_train.append(z_batch)
         
@@ -215,43 +223,58 @@ class RFAE():
         return self
 
 
-    def compute_loss(self, x_hat, x_target):
-        loss_recon = self.criterion_recon(x_hat, x_target)
+    def compute_loss(self, recon, prox_recon, feature_target, prox_target):
+        loss_prox_recon = self.criterion_recon(prox_recon, prox_target)
+        loss_feature_recon = self.criterion_feature_recon(recon, feature_target)
+        loss_recon = self.lam * loss_prox_recon + (1 - self.lam) * loss_feature_recon
 
         self.recon_loss_temp = loss_recon.item()
+        self.prox_recon_loss_temp = loss_prox_recon.item()
+        self.feature_recon_loss_temp = loss_feature_recon.item()
         return loss_recon
 
 
     def train_loop(self, model, epochs, train_loader, optimizer, device = 'cpu'):
         self.epoch_losses_recon = []
+        self.epoch_losses_prox_recon = []
+        self.epoch_losses_feature_recon = []
 
         model.to(device)
         model.train()
 
         for epoch in range(epochs):
             running_recon_loss = 0
+            running_prox_recon_loss = 0
+            running_feature_recon_loss = 0
 
-            for x, x_target in train_loader:
+            for x, prox_target, feature_target in train_loader:
                 x = x.to(device)
-                x_target = x_target.to(device)
+                prox_target = prox_target.to(device)
+                feature_target = feature_target.to(device)
 
-                recon, _ = model(x)
+                recon, prox_recon, _ = model(x)
 
                 optimizer.zero_grad()
-                self.compute_loss(recon, x_target).backward()
+                self.compute_loss(recon, prox_recon, feature_target, prox_target).backward()
 
                 running_recon_loss += self.recon_loss_temp
+                running_prox_recon_loss += self.prox_recon_loss_temp
+                running_feature_recon_loss += self.feature_recon_loss_temp
 
                 optimizer.step()
 
             # Track losses per epoch
             self.epoch_losses_recon.append(running_recon_loss / len(train_loader))
+            self.epoch_losses_prox_recon.append(running_prox_recon_loss / len(train_loader))
+            self.epoch_losses_feature_recon.append(running_feature_recon_loss / len(train_loader))
 
             # Periodic logging of losses
             if epoch % 50 == 0:
                 self.logger.info(
                     f"Epoch {epoch}/{epochs} "
-                    f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f}"
+                    f"- Recon Loss: {self.epoch_losses_recon[-1]:.7f} "
+                    f"- Prox Recon Loss: {self.epoch_losses_prox_recon[-1]:.7f} "
+                    f"- Feature Recon Loss: {self.epoch_losses_feature_recon[-1]:.7f}"
                 )
 
 
@@ -286,8 +309,16 @@ class RFAE():
         self.torch_module.eval()
         x = FromNumpyDataset(x)
         loader = DataLoader(x, batch_size=self.batch_size, shuffle=False)
-        x_hat = [self.torch_module.final_activation(self.torch_module.decoder(batch.to(self.device)))
-                 .cpu().detach().numpy() for batch in loader]
+
+        x_hat = []
+        with torch.no_grad():
+            for batch in loader:
+                prox_recon = self.torch_module.final_activation(
+                    self.torch_module.decoder(batch.to(self.device))
+                )
+                recon = self.torch_module.inverse_head(prox_recon)
+                x_hat.append(recon.cpu().numpy())
+
         return np.concatenate(x_hat)
     
 
