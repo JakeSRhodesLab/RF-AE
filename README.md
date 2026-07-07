@@ -63,7 +63,6 @@ else:
 rfae = RFAE(
     n_components=2,          # Desired final embedding dimension
     epochs=100,              # Training epochs for the AE
-    lam=0.01,                # Weight for reconstruction loss
     device=device,           # Use the detected device
     random_state=42
 )
@@ -101,12 +100,6 @@ These are the arguments you can pass when creating an `RFAE` instance:
   * **`epochs`** (`int`, default: `200`): The number of epochs to train the autoencoder.
   * **`hidden_dims`** (`list[int]`, default: `None`): A list of integers defining the dimensions of the encoder hidden layers. The decoder is built as the mirror reverse of this. If `None`, hidden dimensions are dynamically set according to the RF-AE network input size: `[0.4*input_shape, 0.2*input_shape, 0.05*input_shape]`
   * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters passed directly to the forestgeom-backed `rfphate.RFPHATE` model. User-provided keys override RF-AE's defaults. The parameter key `n_landmark` (default: `2000`) determines the input size of the RF-AE network by using row-normalized proximities to landmarks instead of the full training set for scalable training.
-  * **`lam`** (`float`, default: `1e-2`): The weighting factor for the combined loss function: `balanced_loss = lam * loss_recon + (1 - lam) * loss_emb`.
-      * `lam=1.0`: Only trains on reconstruction loss.
-      * `lam=0.0`: Only trains on geometric (embedding) loss.
-      * If transition-like structure is expected, consider decreasing it to `lam=1e-3` or `lam=1e-4` to better align with RF-PHATE. To emphasize on class internal structure and better separability, consider increasing to `lam=1e-1`.
-      * Overall, values between `lam=1e-2` and `lam=1e-3` offer a good balance.
-      *	Avoid extreme values such as `lam=0.0` and `lam=1.0`, which distort the embedding and over-compress it, respectively.
   * **`dropout_prob`** (`float`, default: `0.0`): The dropout probability to use in the autoencoder's hidden layers.
   * **`recon_loss_type`** (`str`, default: `'jsd'`): The loss function for the reconstruction task. Options are:
       * `'kl'`: Kullback-Leibler Divergence (stable, emphasizes on local proximity reconstruction).
@@ -165,7 +158,7 @@ rfae = RFAE(
 Fits the entire model. This is a two-stage process:
 
 1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and the RF-GAP diffusion operator used as input to the RF-AE network. Internally, RF-AE reads the fitted graph from `self.embedder.phate_op_.graph`, matching the current `RFPHATE` fitted-attribute API.
-2.  Trains the internal PyTorch autoencoder to optimize the balanced reconstruction and geometric loss.
+2.  Trains the internal PyTorch autoencoder to reconstruct the RF-GAP transition target.
 
 <!-- end list -->
 
