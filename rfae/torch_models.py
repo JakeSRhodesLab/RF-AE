@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -94,3 +95,24 @@ class JSDivLoss(nn.Module):
             F.kl_div(m.log(), p, reduction=self.reduction) +
             F.kl_div(m.log(), q, reduction=self.reduction)
         )
+
+class PotentialLoss(nn.Module):
+    def __init__(self, reduction="mean", eps=1e-8):
+        super().__init__()
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, p, q):
+        p_potential = -torch.log(p.clamp(min=self.eps, max=1.0))
+        q_potential = -torch.log(q.clamp(min=self.eps, max=1.0))
+
+        loss = ((p_potential - q_potential) ** 2).sum(dim=1)
+
+        if self.reduction == "none":
+            return loss
+        if self.reduction == "sum":
+            return loss.sum()
+        if self.reduction == "mean":
+            return loss.mean()
+
+        raise ValueError(f"Unsupported reduction: {self.reduction}")

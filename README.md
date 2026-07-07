@@ -100,17 +100,18 @@ These are the arguments you can pass when creating an `RFAE` instance:
   * **`device`** (`str`, default: auto-detected `cuda`, `mps` or `cpu`): The device to run the neural network training on.
   * **`epochs`** (`int`, default: `200`): The number of epochs to train the autoencoder.
   * **`hidden_dims`** (`list[int]`, default: `None`): A list of integers defining the dimensions of the encoder hidden layers. The decoder is built as the mirror reverse of this. If `None`, hidden dimensions are dynamically set according to the RF-AE network input size: `[0.4*input_shape, 0.2*input_shape, 0.05*input_shape]`
-  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters passed directly to the forestgeom-backed `rfphate.RFPHATE` model. User-provided keys override RF-AE's defaults. The parameter key `n_landmark` (default: `2000`) determines the input size of the RF-AE network by using row-normalized proximities to landmarks instead of the full training set for scalable training.
+  * **`embedder_params`** (`dict`, default: `None`): A dictionary of parameters passed directly to the current `rfphate.RFPHATE` model. RF-PHATE embedding options such as `n_components`, `t`, `n_landmark`, `kernel_symm`, and `verbose` belong inside `phate_params`.
   * **`lam`** (`float`, default: `1e-2`): The weighting factor for the combined loss function: `balanced_loss = lam * loss_recon + (1 - lam) * loss_emb`.
       * `lam=1.0`: Only trains on reconstruction loss.
       * `lam=0.0`: Only trains on geometric (embedding) loss.
       * If transition-like structure is expected, consider decreasing it to `lam=1e-3` or `lam=1e-4` to better align with RF-PHATE. To emphasize on class internal structure and better separability, consider increasing to `lam=1e-1`.
       * Overall, values between `lam=1e-2` and `lam=1e-3` offer a good balance.
-      *	Avoid extreme values such as `lam=0.0` and `lam=1.0`, which distort the embedding and over-compress it, respectively.
+      * Avoid extreme values such as `lam=0.0` and `lam=1.0`, which distort the embedding and over-compress it, respectively.
   * **`dropout_prob`** (`float`, default: `0.0`): The dropout probability to use in the autoencoder's hidden layers.
   * **`recon_loss_type`** (`str`, default: `'jsd'`): The loss function for the reconstruction task. Options are:
       * `'kl'`: Kullback-Leibler Divergence (stable, emphasizes on local proximity reconstruction).
       * `'jsd'`: Jensen-Shannon Divergence (better than KL for balancing local and global reconstruction due to the introduction of repulsive forces, but slightly less stable than KL).
+      * `'potential'`: Euclidean distance between PHATE potential vectors, i.e. negative-log probability vectors.
 
 ### Default `RFPHATE` Parameters
 
@@ -119,19 +120,16 @@ When `embedder_params=None`, RF-AE initializes `RFPHATE` with defaults tuned for
 ```python
 {
     "random_state": random_state,
-    "n_components": n_components,
-    "n_landmark": 2000,
-    "kernel_method": "gap",
-    "model_type": "rf",
     "n_jobs": -1,
-    "adjust_diagonal": True,
-    "force_symmetric": True,
-    "kernel_symm": None,
-    "self_similarity": False,
-    "verbose": 0,
-    "forest_params": {},
-    "proximity_params": {},
-    "phate_params": {},
+    "proximity_params": {
+        "weight_scheme": "gap",
+    },
+    "phate_params": {
+        "n_components": n_components,
+        "n_landmark": 2000,
+        "kernel_symm": None,
+        "verbose": 0,
+    },
 }
 ```
 
@@ -140,37 +138,44 @@ Common overrides:
 ```python
 rfae = RFAE(
     embedder_params={
-        "n_landmark": 1000,
         "model_type": "et",  # "rf" for Random Forest, "et" for Extra Trees, or "gbt" for Gradient Boosted Trees
         "n_jobs": -1,
         "forest_params": {
             "n_estimators": 500,
         },
+        "proximity_params": {
+            "weight_scheme": "gap",
+        },
         "phate_params": {
+            "n_components": 2,
             "t": "auto",
+            "n_landmark": 1000,
         },
     }
 )
 ```
 
-`embedder_params` is merged shallowly with these defaults. If you override `forest_params`, `proximity_params`, or `phate_params`, provide the full nested dictionary you want to pass to `RFPHATE`.
+`adjust_diagonal` and `force_symmetric` are fit-time RF-PHATE options. Pass them to `fit()` or `fit_transform()`, not to `RFAE.__init__()`.
 
 
 
 
 ### Class Methods
 
-#### `fit(x, y)`
+#### `fit(x, y, adjust_diagonal=True, force_symmetric=True)`
 
 Fits the entire model. This is a two-stage process:
 
-1.  Runs the `RFPHATE` embedder on `x` and `y` to generate `self.z_target` (target embedding) and the RF-GAP diffusion operator used as input to the RF-AE network. Internally, RF-AE reads the fitted graph from `self.embedder.phate_op_.graph`, matching the current `RFPHATE` fitted-attribute API.
-2.  Trains the internal PyTorch autoencoder to optimize the balanced reconstruction and geometric loss.
+1.  Fits the `RFPHATE` embedder on `x` and `y`, then reads the fitted graph from `self.embedder.phate_op_.graph`.
+2.  Reads the RF-GAP transition operator used as input to the RF-AE network.
+3.  Trains the internal PyTorch autoencoder to optimize the balanced reconstruction and geometric embedding loss.
 
 <!-- end list -->
 
   * **`x`** (`np.ndarray`): The training data, shape `(n_samples, n_features)`.
   * **`y`** (`np.ndarray`): The training labels, shape `(n_samples,)`.
+  * **`adjust_diagonal`** (`bool`, default: `True`): Passed to `RFPHATE.fit()`.
+  * **`force_symmetric`** (`bool`, default: `True`): Passed to `RFPHATE.fit()`.
 
 #### `transform(x)`
 
@@ -186,7 +191,7 @@ Generates the low-dimensional embedding for new data.
 
 **Important note:** Calling `transform()` on the training set after `fit()` does **not** return the true training embeddings. This is because `transform()` first computes proximities using the extended out-of-bag RFGAP definition, which treats the input `x` as out-of-sample. To obtain the correct training embeddings, use `fit_transform()` directly.
 
-#### `fit_transform(x, y)`
+#### `fit_transform(x, y, adjust_diagonal=True, force_symmetric=True)`
 
 A convenience method that calls `fit(x, y)` and returns the training embeddings.
 

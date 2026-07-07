@@ -8,7 +8,7 @@ from scipy import sparse
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
-from .torch_models import ProxAETorchModule, JSDivLoss
+from .torch_models import ProxAETorchModule, JSDivLoss, PotentialLoss
 from rfae.utils.numpy_dataset import FromNumpyDataset
 from rfae.utils.set_seeds import seed_everything
 
@@ -61,38 +61,40 @@ class RFAE():
 
         self.logger.info(f"Using device: {self.device}")
 
-        # Default parameters for the forestgeom-backed RFPHATE API.
         default_embedder_params = {
             'random_state': random_state,
-            'n_components': n_components,
-            'n_landmark': 2000,  # performs well in general, cf PHATE paper
-            'kernel_method': 'gap',  # 'uniform', 'oob', or 'gap'
-            'model_type': 'rf',  # 'rf' (Random Forest), 'et' (Extra Trees), or 'gbt' (Gradient Boosted Trees)
+            'model_type': 'rf',
             'n_jobs': -1,
-            'adjust_diagonal': True,  # important for training stability
-            'force_symmetric': True,  # use RF-PHATE's efficient kernel symmetrization
-            'kernel_symm': None,  # disable PHATE internal symmetrization (which is heavier than RF-GAP's)
-            'self_similarity': False,  # set to True for extremely noisy data, at the cost of destroying RFGAP properties
-            'verbose': 0,
+            'self_similarity': False,
             'forest_params': {},
-            'proximity_params': {},
-            'phate_params': {},
+            'proximity_params': {
+                'weight_scheme': 'gap',
+            },
+            'phate_params': {
+                'n_components': n_components,
+                'n_landmark': 2000,  # performs well in general, cf PHATE paper
+                'kernel_symm': None,
+                'verbose': 0,
+            },
         }
 
-        # Merge defaults with user overrides (if provided)
-        if embedder_params is None:
-            self.embedder_params = default_embedder_params
-        else:
-            self.embedder_params = {**default_embedder_params, **embedder_params}
+        self.embedder_params = self._merge_embedder_params(
+            default_embedder_params,
+            embedder_params,
+        )
 
         self.embedder = RFPHATE(**self.embedder_params)
 
 
     def init_torch_module(self):
-        output_activation = {
+        output_activations = {
             'kl': 'log_softmax',
-            'jsd': 'softmax'
-        }[self.recon_loss_type]
+            'jsd': 'softmax',
+            'potential': 'softmax',
+        }
+        if self.recon_loss_type not in output_activations:
+            raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
+        output_activation = output_activations[self.recon_loss_type]
 
         self.logger.info(f"Initializing RF-AE module with output activation: {output_activation}")
         self.logger.info(f"Input shape: {self.input_shape}")
@@ -119,17 +121,38 @@ class RFAE():
             self.criterion_recon = nn.KLDivLoss(reduction="batchmean")
         elif self.recon_loss_type == 'jsd':
             self.criterion_recon = JSDivLoss(reduction='batchmean')
+        elif self.recon_loss_type == 'potential':
+            self.criterion_recon = PotentialLoss(reduction='mean')
         else:
             raise ValueError(f"Unknown recon_loss_type: {self.recon_loss_type}")
 
+    @staticmethod
+    def _merge_embedder_params(defaults, overrides):
+        if overrides is None:
+            return defaults
+
+        merged = {**defaults, **overrides}
+        for nested_key in ('forest_params', 'proximity_params', 'phate_params'):
+            merged[nested_key] = {
+                **defaults.get(nested_key, {}),
+                **overrides.get(nested_key, {}),
+            }
+
+        return merged
+
     
-    def fit(self, x, y):
+    def fit(self, x, y, adjust_diagonal=True, force_symmetric=True):
         self.labels = y
 
         if self.random_state is not None:
             seed_everything(self.random_state)
 
-        self.z_target = self.embedder.fit_transform(x, y)
+        self.z_target = self.embedder.fit_transform(
+            x,
+            y,
+            adjust_diagonal=adjust_diagonal,
+            force_symmetric=force_symmetric,
+        )
 
         graph = self.embedder.phate_op_.graph
         if isinstance(graph, graphtools.graphs.LandmarkGraph):
@@ -236,8 +259,13 @@ class RFAE():
         return np.concatenate(z)
     
 
-    def fit_transform(self, x, y):
-        self.fit(x, y)
+    def fit_transform(self, x, y, adjust_diagonal=True, force_symmetric=True):
+        self.fit(
+            x,
+            y,
+            adjust_diagonal=adjust_diagonal,
+            force_symmetric=force_symmetric,
+        )
         return self.embedding_
 
 
