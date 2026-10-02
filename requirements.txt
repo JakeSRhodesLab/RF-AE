@@ -1,3 +1,4 @@
 rfphate @ git+https://github.com/jakerhodes/RF-PHATE
+forestgeom>=0.4.0
 setuptools
 torch

@@ -5,6 +5,7 @@ import numpy as np
 import logging
 import graphtools
 from scipy import sparse
+from sklearn.ensemble import RandomForestClassifier
 
 from torch.utils.data import TensorDataset, DataLoader
 from rfphate import RFPHATE
@@ -27,7 +28,8 @@ class RFAE():
                  embedder_params=None,
                  lam=1e-2,
                  dropout_prob=0.0,
-                 recon_loss_type='jsd'):
+                 recon_loss_type='jsd',
+                 forest=None):
 
         self.logger = logging.getLogger(__name__)
         if not self.logger.hasHandlers():
@@ -63,10 +65,11 @@ class RFAE():
 
         default_embedder_params = {
             'random_state': random_state,
-            'model_type': 'rf',
+            'forest': forest if forest is not None else RandomForestClassifier(
+                random_state=random_state, n_jobs=-1
+            ),
             'n_jobs': -1,
             'self_similarity': False,
-            'forest_params': {},
             'proximity_params': {
                 'weight_scheme': 'gap',
             },
@@ -82,6 +85,8 @@ class RFAE():
             default_embedder_params,
             embedder_params,
         )
+        if forest is not None:
+            self.embedder_params['forest'] = forest
 
         self.embedder = RFPHATE(**self.embedder_params)
 
@@ -132,16 +137,16 @@ class RFAE():
             return defaults
 
         merged = {**defaults, **overrides}
-        for nested_key in ('forest_params', 'proximity_params', 'phate_params'):
+        for nested_key in ('proximity_params', 'phate_params'):
             merged[nested_key] = {
                 **defaults.get(nested_key, {}),
-                **overrides.get(nested_key, {}),
+                **(overrides.get(nested_key) or {}),
             }
 
         return merged
 
     
-    def fit(self, x, y, adjust_diagonal=True, force_symmetric=True):
+    def fit(self, x, y, force_symmetric=False, adjust_diagonal=True):
         self.labels = y
 
         if self.random_state is not None:
@@ -259,7 +264,7 @@ class RFAE():
         return np.concatenate(z)
     
 
-    def fit_transform(self, x, y, adjust_diagonal=True, force_symmetric=True):
+    def fit_transform(self, x, y, force_symmetric=False, adjust_diagonal=True):
         self.fit(
             x,
             y,
